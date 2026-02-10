@@ -20,7 +20,7 @@ public class UserLogin : MonoBehaviour
     public Color successColor = Color.green;
     public Color errorColor = Color.red;
     public string dashboardSceneName;
-    // public string registerSceneName;     
+    // public string registerSceneName;      
     private string loginApiUrl = "https://botclub.conbig.com/api/v1/authenticate";
     private string updateLoginTimeApiUrl = "https://botclub.conbig.com/api/v1/update_login_time";
 
@@ -72,7 +72,7 @@ public class UserLogin : MonoBehaviour
         {
             yield return request.SendWebRequest();
 
-            
+
             Debug.Log("RAW LOGIN RESPONSE: " + request.downloadHandler.text);
 
             if (request.result == UnityWebRequest.Result.Success)
@@ -167,17 +167,11 @@ public class UserLogin : MonoBehaviour
 
             if (!string.IsNullOrEmpty(response.access_token))
             {
-                // 🔥 CLEAN TOKEN USING SAME METHOD AS EVERYWHERE ELSE
+                // 1. Store Token (Cleaned)
                 string cleanToken = response.access_token.Trim().Replace("\"", "");
-
-                // Store the CLEAN token
                 PlayerPrefs.SetString("access_token", cleanToken);
 
-                // Debug to verify
-                Debug.Log($"✅ STORED CLEAN TOKEN: '{cleanToken}'");
-                Debug.Log($"Token Length: {cleanToken.Length}");
-
-                // Store User ID
+                // 2. Store User ID
                 if (response.user_id != 0)
                 {
                     PlayerPrefs.SetInt("user_id", response.user_id);
@@ -186,6 +180,19 @@ public class UserLogin : MonoBehaviour
                 else
                 {
                     Debug.LogWarning("⚠️ Login successful, but user_id was 0 or missing in JSON.");
+                }
+
+                // 3. 🔥 NEW: Store User Role
+                if (!string.IsNullOrEmpty(response.user_role))
+                {
+                    PlayerPrefs.SetString("user_role", response.user_role.ToLower()); // Save as lowercase (e.g., "professor")
+                    Debug.Log("✅ User Role Saved: " + response.user_role);
+                }
+                else
+                {
+                    // Fallback: If no role is sent, assume Professor (for backward compatibility)
+                    PlayerPrefs.SetString("user_role", "professor");
+                    Debug.LogWarning("⚠️ No user_role found in response. Defaulting to 'professor'.");
                 }
 
                 PlayerPrefs.Save();
@@ -261,14 +268,6 @@ public class UserLogin : MonoBehaviour
     }
 
     /// <summary>
-    /// Exits the application.
-    /// </summary>
-    /*void exit()
-    {
-        Application.Quit();
-    }*/
-
-    /// <summary>
     /// Displays a temporary message on the UI.
     /// </summary>
     /// <param name="text">Message to display.</param>
@@ -287,9 +286,8 @@ public class UserLogin : MonoBehaviour
     }
 }
 
-/// <summary>
-/// Represents the JSON response from the login API.
-/// </summary>
+// --- DATA CLASSES ---
+
 [Serializable]
 public class LoginResponse
 {
@@ -297,11 +295,10 @@ public class LoginResponse
     public string access_token;
     public string redirect_to;
     public int user_id;
+    // 🔥 NEW: Add this field to capture the role
+    public string user_role;
 }
 
-/// <summary>
-/// Represents error responses from the server.
-/// </summary>
 [Serializable]
 public class ErrorResponse
 {
@@ -310,18 +307,12 @@ public class ErrorResponse
     public string detail;
 }
 
-/// <summary>
-/// Represents the request payload for update login time API.
-/// </summary>
 [Serializable]
 public class UpdateLoginTimeRequest
 {
     public int session_type;
 }
 
-/// <summary>
-/// Represents the response from the update login time API.
-/// </summary>
 [Serializable]
 public class UpdateLoginTimeResponse
 {
