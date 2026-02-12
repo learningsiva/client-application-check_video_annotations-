@@ -21,6 +21,7 @@ public class StudentProfileManager : MonoBehaviour
     public Button closeProfileButton;
     public Button logoutButton; // Students definitely need a logout
 
+
     [Header("Profile Tabs")]
     public Button btnHistory;
     public Button btnWatchLater;

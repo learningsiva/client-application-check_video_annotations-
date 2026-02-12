@@ -5939,10 +5939,12 @@ MonoBehaviour:
   commentItemPrefab: {fileID: 7271086815681041953, guid: ebd8a882f975d204a8cd33ee82f348ab, type: 3}
   headerCountText: {fileID: 1917249955}
   socialMediaPanel: {fileID: 50471980}
+  loadingSpinner: {fileID: 0}
   commentInput: {fileID: 864358924}
   sendButton: {fileID: 901626296}
   closeButton: {fileID: 1131641877}
   addCommentUrl: https://botclub.conbig.com/api/v1/add_comment
+  getCommentsUrl: https://botclub.conbig.com/api/v1/get_video_comments
 --- !u!4 &1969806154
 Transform:
   m_ObjectHideFlags: 0
@@ -6225,7 +6227,7 @@ MonoBehaviour:
   toggleAudioButton: {fileID: 1043001616}
   buttonIcon: {fileID: 1043001617}
   soundOnSprite: {fileID: 21300000, guid: 331806d7077e8cb4987df967218846a8, type: 3}
-  soundOffSprite: {fileID: 21300000, guid: 0638d109cebf81a46b2f3a2b581cf1b6, type: 3}
+  soundOffSprite: {fileID: 21300000, guid: 1f4ac63863bf2994aaba3d7cc7ce5e70, type: 3}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

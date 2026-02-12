@@ -130,7 +130,7 @@ public class UserLogin : MonoBehaviour
                 break;
         }
 
-        // Try to parse server response for more specific error message
+        
         if (!string.IsNullOrEmpty(request.downloadHandler.text))
         {
             try
@@ -147,7 +147,7 @@ public class UserLogin : MonoBehaviour
             }
             catch (Exception)
             {
-                // If JSON parsing fails, use the default message we set above
+                
                 Debug.LogWarning("Could not parse error response: " + request.downloadHandler.text);
             }
         }
