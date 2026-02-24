@@ -38,14 +38,22 @@ public class ClientDashboardManager : MonoBehaviour
     public Sprite activeTabSprite;
     public Sprite inactiveTabSprite;
 
+    // Static — persists across instance destroy/disable, any script can read it
+    public static List<VideoItem> GlobalCache = new List<VideoItem>();
+
     private List<VideoItem> allVideos = new List<VideoItem>();
     private string currentCategory = "All";
-
-    // 🔥 FIX: Track if we need to update when we wake up
     private bool needsRefresh = false;
+    private List<GameObject> cardPool = new List<GameObject>();
 
     void Awake()
     {
+        // FIX: Singleton guard — prevents duplicate instances on scene reload
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
         Instance = this;
     }
 
@@ -59,31 +67,35 @@ public class ClientDashboardManager : MonoBehaviour
 
         if (searchInput) searchInput.onValueChanged.AddListener(OnSearchQueryChanged);
 
-        // Fetch Data on Start
+        // FIX: Activate the default tab visually on start
+        ResetAllTabs();
+        SetTabActive(tabForYou, true);
+
         RefreshData();
     }
 
-    // 🔥 FIX: Using OnEnable to catch the refresh request
     void OnEnable()
     {
-        // If a refresh was requested while this panel was hidden, do it now!
         if (needsRefresh)
         {
+            needsRefresh = false;
             RefreshData();
-            needsRefresh = false; // Reset flag
         }
     }
 
-    // 🔥 UPDATED: Safe Refresh Function
+    void OnDestroy()
+    {
+        // FIX: Clear dangling Instance reference so other scripts don't crash after destroy
+        if (Instance == this) Instance = null;
+    }
+
     public void RefreshData()
     {
-        // 1. If active, run immediately
         if (this.gameObject.activeInHierarchy)
         {
             StopAllCoroutines();
             StartCoroutine(FetchDashboardData());
         }
-        // 2. If inactive, mark it for later (When OnEnable runs)
         else
         {
             Debug.Log("⚠️ Dashboard is inactive. Queuing refresh for next OnEnable.");
@@ -96,86 +108,99 @@ public class ClientDashboardManager : MonoBehaviour
         if (loadingSpinner) loadingSpinner.SetActive(true);
 
         string token = PlayerPrefs.GetString("access_token", "");
-
         if (string.IsNullOrEmpty(token))
         {
-            Debug.LogError(" No Token Found!");
+            Debug.LogError("No Token Found!");
             if (loadingSpinner) loadingSpinner.SetActive(false);
             yield break;
         }
 
         token = token.Trim().Replace("\"", "");
 
-        using (UnityWebRequest request = UnityWebRequest.Get(apiUrl))
+        // FIX: yield cannot be inside a try/catch block in C#.
+        // Solution: do the web request outside try/catch, then parse inside it.
+        UnityWebRequest request = UnityWebRequest.Get(apiUrl);
+        request.SetRequestHeader("Authorization", "Bearer " + token);
+        request.SetRequestHeader("Content-Type", "application/json");
+
+        yield return request.SendWebRequest();
+
+        if (request.result == UnityWebRequest.Result.Success)
         {
-            request.SetRequestHeader("Authorization", "Bearer " + token);
-            request.SetRequestHeader("Content-Type", "application/json");
+            string json = request.downloadHandler.text;
+            Debug.Log("RAW DASHBOARD DATA: " + json);
 
-            yield return request.SendWebRequest();
-
-            if (request.result == UnityWebRequest.Result.Success)
+            // Only the non-yielding parse work goes inside try/catch
+            try
             {
-                string json = request.downloadHandler.text;
+                APIResponseRoot root = JsonUtility.FromJson<APIResponseRoot>(json);
 
-                // 🔥 DEBUG: Check if user_id is here
-                Debug.Log("RAW DASHBOARD DATA: " + json);
-
-                try
+                if (root != null && root.data != null)
                 {
-                    APIResponseRoot root = JsonUtility.FromJson<APIResponseRoot>(json);
-
-                    // 🔥 NEW: Check and Save User ID from Dashboard Response
-                    if (root != null && root.data != null)
+                    if (root.data.user_id != 0)
                     {
-                        if (root.data.user_id != 0)
-                        {
-                            PlayerPrefs.SetInt("user_id", root.data.user_id);
-                            PlayerPrefs.Save();
-                            Debug.Log("✅ User ID Saved from Dashboard: " + root.data.user_id);
-                        }
-                        else
-                        {
-                            Debug.LogWarning("⚠️ User ID is still 0 in Dashboard Data.");
-                        }
+                        PlayerPrefs.SetInt("user_id", root.data.user_id);
+                        PlayerPrefs.Save();
+                        Debug.Log("✅ User ID Saved from Dashboard: " + root.data.user_id);
+                    }
+                    else
+                    {
+                        Debug.LogWarning("⚠️ User ID is 0 in Dashboard Data.");
+                    }
 
-                        // Parse Videos
-                        if (!string.IsNullOrEmpty(root.data.videos))
-                        {
-                            string cleanJson = root.data.videos;
-                            if (cleanJson.StartsWith("\"")) cleanJson = cleanJson.Trim('"').Replace("\\\"", "\"");
+                    if (!string.IsNullOrEmpty(root.data.videos))
+                    {
+                        string cleanJson = root.data.videos;
+                        if (cleanJson.StartsWith("\""))
+                            cleanJson = cleanJson.Trim('"').Replace("\\\"", "\"");
 
-                            allVideos = JsonHelper.FromJson<VideoItem>(cleanJson);
+                        allVideos = JsonHelper.FromJson<VideoItem>(cleanJson);
+                        GlobalCache = allVideos;
 
-                            if (allVideos.Count > 0 && allVideos[0].user_data != null)
-                            {
-                                UpdateProfileUI(allVideos[0].user_data);
-                            }
+                        // FIX: JsonHelper.FromJson can return null on malformed JSON
+                        if (allVideos == null) allVideos = new List<VideoItem>();
+                        if (GlobalCache == null) GlobalCache = new List<VideoItem>();
 
-                            ApplyFilters();
-                        }
+                        if (allVideos.Count > 0 && allVideos[0].user_data != null)
+                            UpdateProfileUI(allVideos[0].user_data);
+                    }
+                    else
+                    {
+                        allVideos = new List<VideoItem>();
                     }
                 }
-                catch (System.Exception e) { Debug.LogError("JSON Error: " + e.Message); }
             }
-            else
+            catch (System.Exception e)
             {
-                Debug.LogError($"API Error {request.responseCode}: {request.downloadHandler.text}");
+                Debug.LogError("JSON Parse Error: " + e.Message);
+                allVideos = new List<VideoItem>();
             }
+
+            // ApplyFilters is called outside the try/catch — safe, no yielding needed
+            ApplyFilters();
         }
+        else
+        {
+            Debug.LogError($"API Error {request.responseCode}: {request.downloadHandler.text}");
+        }
+
+        request.Dispose();
 
         if (loadingSpinner) loadingSpinner.SetActive(false);
     }
 
     void UpdateProfileUI(UserData data)
     {
-        if (profileNameText) profileNameText.text = data.first_name + " " + data.last_name;
-        if (designationText) designationText.text = data.designation;
-        if (taglineText) taglineText.text = data.tag_line;
+        // FIX: first_name / last_name can be null from API — produces "null null" on screen
+        string firstName = data.first_name ?? "";
+        string lastName = data.last_name ?? "";
+
+        if (profileNameText) profileNameText.text = (firstName + " " + lastName).Trim();
+        if (designationText) designationText.text = data.designation ?? "";
+        if (taglineText) taglineText.text = data.tag_line ?? "";
 
         if (profileImageDisplay != null && !string.IsNullOrEmpty(data.profile_pic))
-        {
             StartCoroutine(LoadProfileImage(data.profile_pic));
-        }
     }
 
     IEnumerator LoadProfileImage(string url)
@@ -195,7 +220,8 @@ public class ClientDashboardManager : MonoBehaviour
         }
     }
 
-    // --- FILTERING LOGIC ---
+    // --- FILTERING ---
+
     void SetCategory(string subject, Button activeBtn)
     {
         currentCategory = subject;
@@ -204,10 +230,7 @@ public class ClientDashboardManager : MonoBehaviour
         ApplyFilters();
     }
 
-    void OnSearchQueryChanged(string query)
-    {
-        ApplyFilters();
-    }
+    void OnSearchQueryChanged(string query) => ApplyFilters();
 
     void ApplyFilters()
     {
@@ -216,17 +239,19 @@ public class ClientDashboardManager : MonoBehaviour
 
         foreach (var video in allVideos)
         {
+            // FIX: subject / title can be null — .ToLower() and .Equals() on null throw NullReferenceException
+            string subject = video.subject ?? "";
+            string title = video.title ?? "";
+
             bool matchesCategory = (currentCategory == "All") ||
-                                   (video.subject.Equals(currentCategory, System.StringComparison.OrdinalIgnoreCase));
+                                   subject.Equals(currentCategory, System.StringComparison.OrdinalIgnoreCase);
 
             bool matchesSearch = string.IsNullOrEmpty(searchQuery) ||
-                                 video.title.ToLower().Contains(searchQuery) ||
-                                 video.subject.ToLower().Contains(searchQuery);
+                                 title.ToLower().Contains(searchQuery) ||
+                                 subject.ToLower().Contains(searchQuery);
 
             if (matchesCategory && matchesSearch)
-            {
                 filtered.Add(video);
-            }
         }
 
         PopulateUI(filtered);
@@ -235,18 +260,44 @@ public class ClientDashboardManager : MonoBehaviour
     void PopulateUI(List<VideoItem> videosToShow)
     {
         VideoPanelUI.ClearQueue();
-        foreach (Transform child in videoListContainer) Destroy(child.gameObject);
+
+        // Pool existing cards
+        foreach (Transform child in videoListContainer)
+        {
+            child.gameObject.SetActive(false);
+            cardPool.Add(child.gameObject);
+        }
 
         foreach (VideoItem vid in videosToShow)
         {
-            GameObject obj = Instantiate(videoCardPrefab, videoListContainer);
+            GameObject obj;
+            if (cardPool.Count > 0)
+            {
+                obj = cardPool[cardPool.Count - 1];
+                cardPool.RemoveAt(cardPool.Count - 1);
+                obj.transform.SetParent(videoListContainer);
+                obj.SetActive(true);
+            }
+            else
+            {
+                obj = Instantiate(videoCardPrefab, videoListContainer);
+            }
+
             VideoPanelUI ui = obj.GetComponent<VideoPanelUI>();
             if (ui != null)
             {
                 ui.Setup(vid, OnVideoClicked);
-                ui.SetCardColor(GetColorForSubject(vid.subject));
+                ui.SetCardColor(GetColorForSubject(vid.subject ?? ""));
             }
         }
+
+        // FIX: Destroy leftover pooled cards that weren't reused.
+        // Without this the pool grows unbounded with every filter/search change.
+        foreach (GameObject stale in cardPool)
+        {
+            if (stale != null) Destroy(stale);
+        }
+        cardPool.Clear();
     }
 
     void OnVideoClicked(VideoItem selectedVideo)
@@ -278,6 +329,7 @@ public class ClientDashboardManager : MonoBehaviour
 
     void SetTabActive(Button btn, bool isActive)
     {
-        if (btn != null && btn.image != null) btn.image.sprite = isActive ? activeTabSprite : inactiveTabSprite;
+        if (btn != null && btn.image != null)
+            btn.image.sprite = isActive ? activeTabSprite : inactiveTabSprite;
     }
 }

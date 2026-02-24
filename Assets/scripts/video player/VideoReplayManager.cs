@@ -53,7 +53,6 @@ public class VideoReplayManager : MonoBehaviour
     public float minimizedIconSpacing = 70f;
     public float iconDisplayDuration = 1.0f;
 
-    // 🔥 NEW: Reference to the separate social manager script
     [Header("Social Manager")]
     public VideoSocialManager socialManager;
     public Button openCommentsButton;
@@ -108,16 +107,13 @@ public class VideoReplayManager : MonoBehaviour
         if (AppSession.CurrentVideo != null)
             LoadFromSession(AppSession.CurrentVideo);
         else
-            UpdateStatus(" No Video Selected.");
+            UpdateStatus("No Video Selected.");
     }
 
     void OnOpenCommentsClicked()
     {
-        // Delegate UI opening to the social manager's controller
         if (socialManager != null && socialManager.commentsController != null)
-        {
             socialManager.commentsController.OpenPanel();
-        }
     }
 
     private void LoadFromSession(VideoItem videoData)
@@ -135,11 +131,10 @@ public class VideoReplayManager : MonoBehaviour
             if (fullNameText) fullNameText.text = $"{fName} {lName}";
             if (firstLetterText && !string.IsNullOrEmpty(fName))
                 firstLetterText.text = fName.Substring(0, 1).ToUpper();
-
             if (authorDesignationText) authorDesignationText.text = videoData.user_data.designation;
         }
 
-        // 2. 🔥 DELEGATE SOCIAL LOGIC TO NEW MANAGER
+        // 2. Social
         if (socialManager != null)
         {
             socialManager.Initialize(
@@ -150,11 +145,27 @@ public class VideoReplayManager : MonoBehaviour
             );
         }
 
-        // 3. Prepare Video
+        // 3. FIX: Show cached frame thumbnail IMMEDIATELY — zero wait, zero network call.
+        //    VideoPanelUI captured this frame already while user browsed the dashboard.
+        //    ✅ Only change from your original: VideoThumbnailCache → VideoPanelUI.GetCachedFrame
+        Texture2D cachedFrame = VideoPanelUI.GetCachedFrame(videoData.video_url);
+        if (cachedFrame != null)
+        {
+            videoDisplay.texture = cachedFrame;
+            videoDisplay.color = Color.white;
+            Debug.Log("✅ Instant thumbnail from cache — no wait.");
+        }
+        else
+        {
+            videoDisplay.color = new Color(0.1f, 0.1f, 0.1f);
+            Debug.Log("⚠️ No cached frame found — showing placeholder until video prepares.");
+        }
+
+        // 4. Start video prepare in background (needed for actual playback)
         videoPlayer.url = videoData.video_url;
         videoPlayer.Prepare();
 
-        // 4. Load Annotations
+        // 5. Annotations
         allAnnotations = videoData.annotations;
         if (allAnnotations == null) allAnnotations = new List<AnnotationItem>();
         allAnnotations.Sort((a, b) => a.timestamp.CompareTo(b.timestamp));
@@ -162,7 +173,22 @@ public class VideoReplayManager : MonoBehaviour
         hasLoadedAnnotations = true;
     }
 
-    // --- (The rest of the script remains EXACTLY the same as your "Working Fine" version) ---
+    private void OnVideoPrepared(VideoPlayer vp)
+    {
+        isVideoReady = true;
+        videoDisplay.texture = videoPlayer.texture;
+        videoPlayer.playbackSpeed = 1.0f;
+
+        if (seekSlider) { seekSlider.minValue = 0; seekSlider.maxValue = (float)vp.length; }
+        if (totalTimeText) totalTimeText.text = FormatTime(vp.length);
+
+        SpawnTimelineMarkers();
+
+        videoPlayer.time = 0;
+        videoPlayer.Pause();
+        UpdatePlayStateVisuals(false);
+        SetAllIconsPaused(true);
+    }
 
     public void OnShareClicked()
     {
@@ -246,13 +272,9 @@ public class VideoReplayManager : MonoBehaviour
         if (currentFocusIcon != null && annotationPanel.activeSelf)
         {
             if (currentFocusIcon.IsMinimizing())
-            {
                 HideAnnotationPanel();
-            }
             else
-            {
                 SyncPanelToIcon(currentFocusIcon);
-            }
         }
     }
 
@@ -263,23 +285,6 @@ public class VideoReplayManager : MonoBehaviour
             RectTransform iconRect = icon.GetComponent<RectTransform>();
             annotationPanelRect.anchoredPosition = iconRect.anchoredPosition + panelOffset;
         }
-    }
-
-    private void OnVideoPrepared(VideoPlayer vp)
-    {
-        isVideoReady = true;
-        videoDisplay.texture = videoPlayer.texture;
-        videoPlayer.playbackSpeed = 1.0f;
-
-        if (seekSlider) { seekSlider.minValue = 0; seekSlider.maxValue = (float)vp.length; }
-        if (totalTimeText) totalTimeText.text = FormatTime(vp.length);
-
-        SpawnTimelineMarkers();
-
-        videoPlayer.time = 0;
-        videoPlayer.Pause();
-        UpdatePlayStateVisuals(false);
-        SetAllIconsPaused(true);
     }
 
     public void OnVideoDisplayClicked()
@@ -345,9 +350,7 @@ public class VideoReplayManager : MonoBehaviour
         if (!forceMinimized)
         {
             foreach (var existingIcon in activeIcons)
-            {
                 if (existingIcon.IsShowing()) existingIcon.ForceMinimizeImmediate();
-            }
         }
 
         AnnotationIcon icon = GetIconFromPool();
@@ -359,9 +362,7 @@ public class VideoReplayManager : MonoBehaviour
         Vector2 miniPos = GetMinimizedPosition(activeIcons.Count);
 
         icon.Initialize(ann, screenPos, miniPos, OnIconClick, OnIconTimeTravel, OnIconMinimize, forceMinimized);
-
         icon.SetPaused(!videoPlayer.isPlaying);
-
         activeIcons.Add(icon);
 
         if (!forceMinimized)
@@ -369,7 +370,6 @@ public class VideoReplayManager : MonoBehaviour
             currentFocusIcon = icon;
             UpdateAnnotationPanel(ann.content.heading, ann.content.body);
             SyncPanelToIcon(icon);
-
             videoPlayer.Pause();
             UpdatePlayStateVisuals(false);
             SetAllIconsPaused(true);
@@ -423,7 +423,7 @@ public class VideoReplayManager : MonoBehaviour
             if (ann.timestamp < targetTime && !triggeredTimestamps.Contains(ann.timestamp))
             {
                 triggeredTimestamps.Add(ann.timestamp);
-                SpawnAnnotationIcon(ann, true);
+                SpawnAnnotationIcon(ann, true); 
             }
         }
         SetAllIconsPaused(!videoPlayer.isPlaying);
@@ -511,9 +511,11 @@ public class VideoReplayManager : MonoBehaviour
     {
         EventTrigger trigger = seekSlider.gameObject.GetComponent<EventTrigger>();
         if (!trigger) trigger = seekSlider.gameObject.AddComponent<EventTrigger>();
+
         EventTrigger.Entry entryDown = new EventTrigger.Entry { eventID = EventTriggerType.PointerDown };
         entryDown.callback.AddListener((data) => isUserDraggingSlider = true);
         trigger.triggers.Add(entryDown);
+
         EventTrigger.Entry entryUp = new EventTrigger.Entry { eventID = EventTriggerType.PointerUp };
         entryUp.callback.AddListener((data) => {
             isUserDraggingSlider = false;
@@ -523,5 +525,8 @@ public class VideoReplayManager : MonoBehaviour
         trigger.triggers.Add(entryUp);
     }
 
-    private void OnSeekSliderValueChanged(float val) { if (isUserDraggingSlider) currentTimeText.text = FormatTime(val); }
+    private void OnSeekSliderValueChanged(float val)
+    {
+        if (isUserDraggingSlider) currentTimeText.text = FormatTime(val);
+    }
 }

@@ -11,18 +11,21 @@ public class VideoPanelUI : MonoBehaviour
     public TMP_Text titleText;
     public TMP_Text subjectText;
     public TMP_Text durationText;
-
-    // Existing Full Name Text
     public TMP_Text userNameText;
-
-    // 🔥 NEW: Drag the Text object for the First Letter (e.g., 'P') here
     public TMP_Text firstLetterText;
 
     public RawImage thumbnailDisplay;
     public Button cardButton;
     public Image colorStrip;
 
-    // --- STATIC QUEUE ---
+    [Header("Placeholder shown while thumbnail generates")]
+    [Tooltip("Assign a generic thumbnail sprite in the prefab — shown instantly while real thumbnail loads")]
+    public Texture placeholderTexture;
+
+    // --- STATIC THUMBNAIL CACHE ---
+    private static Dictionary<string, Texture2D> frameCache = new Dictionary<string, Texture2D>();
+
+    // --- STATIC QUEUE (one VideoPlayer at a time — safe for Android) ---
     private static Queue<VideoPanelUI> thumbnailQueue = new Queue<VideoPanelUI>();
     private static bool isLoaderBusy = false;
     private static MonoBehaviour activeSupervisor = null;
@@ -32,6 +35,10 @@ public class VideoPanelUI : MonoBehaviour
     public bool isWorkDone = false;
     private VideoPlayer currentVP;
     private RenderTexture currentRT;
+
+    private Texture2D ownedSnapshot = null;
+
+    // ---------------------------------------------------------------
 
     void OnEnable()
     {
@@ -48,32 +55,50 @@ public class VideoPanelUI : MonoBehaviour
         }
     }
 
+    public static void ClearCache()
+    {
+        foreach (var tex in frameCache.Values)
+            if (tex != null) Object.Destroy(tex);
+        frameCache.Clear();
+    }
+
+    public static void ClearQueue()
+    {
+        thumbnailQueue.Clear();
+        isLoaderBusy = false;
+        activeSupervisor = null;
+    }
+
+    // ✅ ONLY ADDITION — exposes frameCache so VideoReplayManager can show
+    // an instant thumbnail on scene open without any other script changes.
+    public static Texture2D GetCachedFrame(string videoUrl)
+    {
+        if (string.IsNullOrEmpty(videoUrl)) return null;
+        frameCache.TryGetValue(videoUrl, out Texture2D tex);
+        return tex;
+    }
+
+    // ---------------------------------------------------------------
+
     public void Setup(VideoItem data, System.Action<VideoItem> onClick)
     {
         myData = data;
         onClickCallback = onClick;
 
-        if (titleText) titleText.text = data.title;
-        if (subjectText) subjectText.text = data.subject;
-        if (durationText) durationText.text = data.duration + " mins";
+        if (titleText) titleText.text = data.title ?? "";
+        if (subjectText) subjectText.text = data.subject ?? "";
+        if (durationText) durationText.text = (data.duration ?? "") + " mins";
 
-        // 🔥 Set User Data (Name & First Letter)
         if (data.user_data != null)
         {
             string fName = data.user_data.first_name ?? "";
             string lName = data.user_data.last_name ?? "";
 
-            // Set Full Name
             if (userNameText != null)
-            {
-                userNameText.text = fName + " " + lName;
-            }
+                userNameText.text = (fName + " " + lName).Trim();
 
-            // 🔥 NEW: Set First Letter
             if (firstLetterText != null && !string.IsNullOrEmpty(fName))
-            {
                 firstLetterText.text = fName.Substring(0, 1).ToUpper();
-            }
         }
 
         if (cardButton)
@@ -84,15 +109,25 @@ public class VideoPanelUI : MonoBehaviour
 
         if (thumbnailDisplay)
         {
-            thumbnailDisplay.texture = null;
-            thumbnailDisplay.color = Color.gray;
+            string url = data.video_url ?? "";
 
-            if (gameObject.activeInHierarchy)
+            if (!string.IsNullOrEmpty(url) && frameCache.ContainsKey(url))
             {
-                StartCoroutine(FixLayoutWithDelay());
+                thumbnailDisplay.texture = frameCache[url];
+                thumbnailDisplay.color = Color.white;
+                isWorkDone = true;
+            }
+            else
+            {
+                thumbnailDisplay.texture = placeholderTexture;
+                thumbnailDisplay.color = placeholderTexture != null ? Color.white : new Color(0.15f, 0.15f, 0.15f);
+
+                isWorkDone = false;
+                AddToQueue(this);
             }
 
-            AddToQueue(this);
+            if (gameObject.activeInHierarchy)
+                StartCoroutine(FixLayoutWithDelay());
         }
     }
 
@@ -101,13 +136,7 @@ public class VideoPanelUI : MonoBehaviour
         if (colorStrip) colorStrip.color = c;
     }
 
-    // --- QUEUE SYSTEM (Unchanged) ---
-    public static void ClearQueue()
-    {
-        thumbnailQueue.Clear();
-        isLoaderBusy = false;
-        activeSupervisor = null;
-    }
+    // ---------------------------------------------------------------
 
     private void AddToQueue(VideoPanelUI panel)
     {
@@ -126,37 +155,49 @@ public class VideoPanelUI : MonoBehaviour
 
         while (thumbnailQueue.Count > 0)
         {
-            VideoPanelUI currentPanel = thumbnailQueue.Dequeue();
+            VideoPanelUI panel = thumbnailQueue.Dequeue();
 
-            if (currentPanel == null || currentPanel.gameObject == null || !currentPanel.gameObject.activeInHierarchy)
+            if (panel == null || panel.gameObject == null
+                || !panel.gameObject.activeInHierarchy
+                || panel.isWorkDone)
             {
                 continue;
             }
 
-            currentPanel.isWorkDone = false;
-            currentPanel.StartCoroutine(currentPanel.GenerateFrameZero(currentPanel.myData.video_url));
+            panel.isWorkDone = false;
+            panel.StartCoroutine(panel.GenerateFrameZero(panel.myData.video_url));
 
             float timer = 0f;
-            while (!currentPanel.isWorkDone && timer < 3.5f)
+            while (!panel.isWorkDone && timer < 5f)
             {
-                if (currentPanel == null) break;
+                if (panel == null) break;
                 timer += Time.deltaTime;
                 yield return null;
             }
 
-            if (currentPanel != null && !currentPanel.isWorkDone)
+            if (panel != null && !panel.isWorkDone)
             {
-                currentPanel.ForceKill();
+                Debug.LogWarning($"Thumbnail timeout for: {panel.myData?.video_url}");
+                panel.ForceKill();
             }
+
+            yield return new WaitForSeconds(0.1f);
         }
 
         isLoaderBusy = false;
         activeSupervisor = null;
     }
 
-    // --- WORKER LOGIC (Unchanged) ---
+    // ---------------------------------------------------------------
+
     IEnumerator GenerateFrameZero(string videoUrl)
     {
+        if (string.IsNullOrEmpty(videoUrl))
+        {
+            ForceKill();
+            yield break;
+        }
+
         currentRT = RenderTexture.GetTemporary(320, 180, 16, RenderTextureFormat.ARGB32);
 
         currentVP = gameObject.AddComponent<VideoPlayer>();
@@ -167,12 +208,18 @@ public class VideoPanelUI : MonoBehaviour
         currentVP.targetTexture = currentRT;
         currentVP.aspectRatio = VideoAspectRatio.Stretch;
 
-        currentVP.errorReceived += (s, m) => ForceKill();
+        bool errorOccurred = false;
+        currentVP.errorReceived += (s, m) =>
+        {
+            Debug.LogWarning($"VideoPlayer error [{videoUrl}]: {m}");
+            errorOccurred = true;
+        };
+
         currentVP.Prepare();
 
         while (!currentVP.isPrepared)
         {
-            if (isWorkDone) yield break;
+            if (isWorkDone || errorOccurred) { ForceKill(); yield break; }
             yield return null;
         }
 
@@ -181,7 +228,7 @@ public class VideoPanelUI : MonoBehaviour
         currentVP.Pause();
         yield return new WaitForEndOfFrame();
 
-        if (currentRT != null && thumbnailDisplay != null)
+        if (currentRT != null && thumbnailDisplay != null && !isWorkDone)
         {
             Texture2D snapshot = new Texture2D(currentRT.width, currentRT.height, TextureFormat.RGB24, false);
             RenderTexture.active = currentRT;
@@ -189,9 +236,15 @@ public class VideoPanelUI : MonoBehaviour
             snapshot.Apply();
             RenderTexture.active = null;
 
-            thumbnailDisplay.texture = snapshot;
+            if (!frameCache.ContainsKey(videoUrl))
+                frameCache[videoUrl] = snapshot;
+            else
+                Destroy(snapshot);
+
+            thumbnailDisplay.texture = frameCache[videoUrl];
             thumbnailDisplay.color = Color.white;
         }
+
         CleanUp();
         isWorkDone = true;
     }
@@ -199,7 +252,11 @@ public class VideoPanelUI : MonoBehaviour
     public void ForceKill()
     {
         CleanUp();
-        if (thumbnailDisplay != null && thumbnailDisplay.texture == null) thumbnailDisplay.color = Color.black;
+        if (thumbnailDisplay != null && thumbnailDisplay.texture == null)
+        {
+            thumbnailDisplay.texture = placeholderTexture;
+            thumbnailDisplay.color = placeholderTexture != null ? Color.white : new Color(0.15f, 0.15f, 0.15f);
+        }
         isWorkDone = true;
     }
 
@@ -232,7 +289,8 @@ public class VideoPanelUI : MonoBehaviour
         if (thumbnailDisplay.transform.parent != null)
         {
             RectTransform parentRect = thumbnailDisplay.transform.parent.GetComponent<RectTransform>();
-            if (parentRect != null && parentRect.rect.width > 0) rt.sizeDelta = parentRect.rect.size;
+            if (parentRect != null && parentRect.rect.width > 0)
+                rt.sizeDelta = parentRect.rect.size;
         }
     }
 }

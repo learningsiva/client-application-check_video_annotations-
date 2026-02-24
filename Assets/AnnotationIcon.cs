@@ -25,9 +25,12 @@ public class AnnotationIcon : MonoBehaviour, IPointerClickHandler
 
     private bool isPaused = false;
     private float currentTimer = 0f;
-
-    // 🔥 NEW: Flag to track movement state
     private bool isMinimizing = false;
+
+    // Cached reference to SonarSpawner on the CenterDot child
+    private SonarSpawner sonarSpawner;
+
+    // ---------------------------------------------------------------
 
     public void Initialize(AnnotationItem d, Vector2 aPos, Vector2 mPos,
                            System.Action<AnnotationItem, AnnotationIcon> click,
@@ -42,21 +45,33 @@ public class AnnotationIcon : MonoBehaviour, IPointerClickHandler
         onTimeTravel = travel;
         onMinimize = minimize;
 
+        // Find SonarSpawner once on the CenterDot child — reused for all state changes
+        if (sonarSpawner == null)
+        {
+            Transform centerDot = transform.Find("CenterDot");
+            if (centerDot != null)
+                sonarSpawner = centerDot.GetComponent<SonarSpawner>();
+            else
+                Debug.LogWarning("[AnnotationIcon] 'CenterDot' child not found — sonar control disabled.");
+        }
+
         if (timestampLabel) timestampLabel.text = FormatTime(data.timestamp);
 
         isPaused = false;
         currentTimer = 0f;
-        isMinimizing = false; // Reset flag
+        isMinimizing = false;
 
         if (forceMinimized)
         {
             state = State.Minimized;
             GetComponent<RectTransform>().anchoredPosition = minimizedPos;
+            SetSonar(false); // Already at corner — sonar off immediately
             onMinimize?.Invoke(this);
         }
         else
         {
             state = State.Showing;
+            SetSonar(true); // Showing on video — sonar on
             GetComponent<RectTransform>().anchoredPosition = annotationPos;
             StartCoroutine(AutoMinimizeRoutine());
         }
@@ -64,45 +79,54 @@ public class AnnotationIcon : MonoBehaviour, IPointerClickHandler
 
     public AnnotationItem GetData() => data;
 
-    public bool IsShowing()
-    {
-        return state == State.Showing;
-    }
+    public bool IsShowing() => state == State.Showing;
 
-    // 🔥 NEW: Helper for VideoReplayManager
-    public bool IsMinimizing()
-    {
-        // We are minimizing if the flag is true OR if we are fully minimized
-        return isMinimizing || state == State.Minimized;
-    }
+    public bool IsMinimizing() => isMinimizing || state == State.Minimized;
+
+    // ---------------------------------------------------------------
 
     public void ForceMinimizeImmediate()
     {
         if (state == State.Minimized) return;
 
         state = State.Minimized;
-        isMinimizing = true; // Mark as moving
+        isMinimizing = true;
         currentTimer = displayDuration;
 
         StopAllCoroutines();
-        MoveToMinimizedPosition();
+        GetComponent<RectTransform>().anchoredPosition = minimizedPos;
+
+        // Icon snapped instantly to corner — disable sonar right away
+        SetSonar(false);
+
+        onMinimize?.Invoke(this);
     }
 
-    public void SetPaused(bool paused)
+    public void MoveToMinimizedPosition()
     {
-        isPaused = paused;
+        state = State.Minimized;
+        isMinimizing = true;
+        StartCoroutine(MoveTo(minimizedPos, onArrival: () => SetSonar(false)));
+        onMinimize?.Invoke(this);
     }
 
     public void Restore()
     {
         state = State.Showing;
-        isMinimizing = false; // 🔥 Reset flag so Panel knows it's safe to show
+        isMinimizing = false;
         currentTimer = 0f;
+
+        // Re-enable sonar as soon as icon starts moving back to video position
+        SetSonar(true);
 
         StopAllCoroutines();
         StartCoroutine(MoveTo(annotationPos));
         StartCoroutine(AutoMinimizeRoutine());
     }
+
+    public void SetPaused(bool paused) => isPaused = paused;
+
+    public void SetShowingAnnotationsState() => state = State.Showing;
 
     public void OnPointerClick(PointerEventData eventData)
     {
@@ -112,43 +136,44 @@ public class AnnotationIcon : MonoBehaviour, IPointerClickHandler
             onClick?.Invoke(data, this);
     }
 
-    public void MoveToMinimizedPosition()
-    {
-        state = State.Minimized;
-        isMinimizing = true; // 🔥 Mark start of movement
-        StartCoroutine(MoveTo(minimizedPos));
-        onMinimize?.Invoke(this);
-    }
-
-    public void SetShowingAnnotationsState()
-    {
-        state = State.Showing;
-    }
+    // ---------------------------------------------------------------
 
     private IEnumerator AutoMinimizeRoutine()
     {
         while (currentTimer < displayDuration)
         {
-            if (!isPaused)
-            {
-                currentTimer += Time.deltaTime;
-            }
+            if (!isPaused) currentTimer += Time.deltaTime;
             yield return null;
         }
         MoveToMinimizedPosition();
     }
 
-    private IEnumerator MoveTo(Vector2 target)
+    // onArrival callback — fires exactly when icon reaches its target position
+    private IEnumerator MoveTo(Vector2 target, System.Action onArrival = null)
     {
         RectTransform rt = GetComponent<RectTransform>();
 
-        // Simple easing
         while (Vector2.Distance(rt.anchoredPosition, target) > 1f)
         {
             rt.anchoredPosition = Vector2.Lerp(rt.anchoredPosition, target, Time.deltaTime * 5f);
             yield return null;
         }
+
         rt.anchoredPosition = target;
+
+        // Fire arrival callback now that movement is complete
+        onArrival?.Invoke();
+
+        // Clear minimizing flag once we've fully arrived (either direction)
+        isMinimizing = false;
+    }
+
+    // ---------------------------------------------------------------
+
+    private void SetSonar(bool enabled)
+    {
+        if (sonarSpawner != null)
+            sonarSpawner.enabled = enabled;
     }
 
     private string FormatTime(float timeInSeconds)
